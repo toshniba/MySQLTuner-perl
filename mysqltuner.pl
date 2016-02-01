@@ -168,6 +168,11 @@ open( $fh, '>', $outputfile )
   or die("Fail opening $outputfile")
   if defined($outputfile);
 $opt{nocolor} = 1 if defined($outputfile);
+# this should work but not for me (win7 64bit)
+if ( $^O eq 'MSWin32' ) {
+    eval "{ use Win32::Console::ANSI }";
+    $opt{nocolor} = 1 if $@;
+}
 
 # Setting up the colors for the print styles
 my $good = ( $opt{nocolor} == 0 ) ? "[\e[0;32mOK\e[0m]" : "[OK]";
@@ -278,6 +283,14 @@ sub pretty_uptime {
     return $uptimestring;
 }
 
+my $osname = $^O;
+if( $osname eq 'MSWin32' ) {
+  eval { require Win32; } or last;
+  $osname = Win32::GetOSName();
+  infoprint "* Windows OS($osname) is not fully supported.\n";
+  #exit 1;
+}
+
 # Retrieves the memory installed on this machine
 my ( $physical_memory, $swap_memory, $duflags );
 
@@ -287,7 +300,7 @@ sub os_setup {
 "Unable to determine total memory/swap; use '--forcemem' and '--forceswap'";
         exit 1;
     }
-    my $os = `uname`;
+    my $os = ( $^O eq 'MSWin32' ) ? $osname : `uname`;
     $duflags = ( $os =~ /Linux/ ) ? '-b' : '';
     if ( $opt{'forcemem'} > 0 ) {
         $physical_memory = $opt{'forcemem'} * 1048576;
@@ -303,7 +316,35 @@ sub os_setup {
         }
     }
     else {
-        if ( $os =~ /Linux|CYGWIN/ ) {
+#        if ( $osname eq 'Win7' ) { # this is (also?) shown on Win7 x64 machine
+        if ( $^O eq 'MSWin32' ) {
+          # maybe try Win32::... below when fetching by wmic fails...
+            $physical_memory =
+              `wmic computersystem get TotalPhysicalMemory |findstr [0-9]`
+              or memerror;
+            $swap_memory =
+              `wmic pagefile get AllocatedBaseSize |findstr [0-9]`
+              or memerror;
+            $swap_memory *= 1048576;
+        }
+        # this works for real 32bit only (max return values 4GB)
+#        elsif ( $^O eq 'MSWin32' ) {
+#          eval "{ use Win32::SystemInfo }";
+#          if ($@) {
+#              badprint "Win32::SystemInfo Module is needed.";
+#              exit 1;
+#          }
+#          # http://search.cpan.org/~cjohnston/Win32-SystemInfo-0.12/SystemInfo.pm
+#          my %h = (
+#            'TotalPhys' => 0,  # total physical memory in bytes
+#            'TotalPage' => 0,  # page file size
+#          );
+#          Win32::SystemInfo::MemoryStatus(\%h);
+#          $physical_memory = $h{'TotalPhys'};
+#          $swap_memory = $h{'TotalPage'};
+#          undef(%h);
+#        }
+        elsif ( $os =~ /Linux|CYGWIN/ ) {
             $physical_memory =
               `grep -i memtotal: /proc/meminfo | awk '{print \$2}'`
               or memerror;
@@ -380,8 +421,8 @@ sub validate_tuner_version {
   if ( 1 != 1 and defined($httpcli) and -e "$httpcli" ) {
     debugprint "$httpcli is available.";
 
-    debugprint "$httpcli --connect-timeout 5 -silent '$url' 2>/dev/null | grep 'my \$tunerversion'| cut -d\\\" -f2";
-    $update = `$httpcli --connect-timeout 5 -silent '$url' 2>/dev/null | grep 'my \$tunerversion'| cut -d\\\" -f2`;
+    debugprint "$httpcli --connect-timeout 5 -silent '$url' 2>$devnull | grep 'my \$tunerversion'| cut -d\\\" -f2";
+    $update = `$httpcli --connect-timeout 5 -silent '$url' 2>$devnull | grep 'my \$tunerversion'| cut -d\\\" -f2`;
     chomp($update);
     debugprint "VERSION: $update";
 
@@ -421,13 +462,6 @@ sub compare_tuner_version {
 # Checks to see if a MySQL login is possible
 my ( $mysqllogin, $doremote, $remotestring, $mysqlcmd, $mysqladmincmd );
 
-my $osname = $^O;
-if( $osname eq 'MSWin32' ) {
-  eval { require Win32; } or last;
-  $osname = Win32::GetOSName();
-  infoprint "* Windows OS($osname) is not fully supported.\n";
-  #exit 1;
-}
 sub mysql_setup {
     $doremote     = 0;
     $remotestring = '';
@@ -512,7 +546,7 @@ sub mysql_setup {
             exit 1;
         }
     }
-    my $svcprop = `which svcprop 2>/dev/null`;
+    my $svcprop = `which svcprop 2>$devnull`;
     if ( substr( $svcprop, 0, 1 ) =~ "/" ) {
 
         # We are on solaris
@@ -658,7 +692,7 @@ sub mysql_setup {
 sub select_array {
     my $req = shift;
     debugprint "PERFORM: $req ";
-    my @result = `$mysqlcmd $mysqllogin -Bse "$req" 2>>/dev/null`;
+    my @result = `$mysqlcmd $mysqllogin -Bse "$req" 2>>$devnull`;
     chomp(@result);
     return @result;
 }
@@ -667,7 +701,7 @@ sub select_array {
 sub select_one {
     my $req = shift;
     debugprint "PERFORM: $req ";
-    my $result = `$mysqlcmd $mysqllogin -Bse "$req" 2>>/dev/null`;
+    my $result = `$mysqlcmd $mysqllogin -Bse "$req" 2>>$devnull`;
     chomp($result);
     return $result;
 }
@@ -790,13 +824,13 @@ sub cve_recommendations {
         badprint "$cve[4] : $cve[5]";
         $cvefound++;
       }
-    
+
     }
     close FH or die "Cannot close $opt{cvefile}: $!";
     if ($cvefound==0) {
       goodprint "NO SECURITY CVE FOUND FOR YOUR VERSION";
       return;
-    } 
+    }
     badprint $cvefound . " CVE(s) found for your MySQL release.";
     push( @generalrec, $cvefound . " CVE(s) found for your MySQL release. Consider upgrading your version !" );
 }
@@ -1031,7 +1065,24 @@ my ($arch);
 
 sub check_architecture {
     if ( $doremote eq 1 ) { return; }
-    if ( `uname` =~ /SunOS/ && `isainfo -b` =~ /64/ ) {
+    if ( $^O eq 'MSWin32' ) {
+        if ( `wmic os get osarchitecture |findstr [0-9]` =~ /64/ ) {
+            $arch = 64;
+            goodprint "Operating on 64-bit architecture";
+        }
+        else {
+            $arch = 32;
+            if ( $physical_memory > 2147483648 ) {
+                badprint
+    "Switch to 64-bit OS - MySQL cannot currently use all of your RAM";
+            }
+            else {
+                goodprint
+                  "Operating on 32-bit architecture with less than 2GB RAM";
+            }
+        }
+    }
+    elsif ( `uname` =~ /SunOS/ && `isainfo -b` =~ /64/ ) {
         $arch = 64;
         goodprint "Operating on 64-bit architecture";
     }
